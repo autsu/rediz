@@ -82,9 +82,11 @@ zskiplist *zslCreate(void) {
     zskiplist *zsl;
 
     zsl = zmalloc(sizeof(*zsl));
-    zsl->level = 1;
-    zsl->length = 0;
+    zsl->level = 1; // 初始最高层数为 1
+    zsl->length = 0;    // 不包含任何节点
+    // header 指向一个空节点，该节点的有 32 层（即 level[] 的长度为 32）
     zsl->header = zslCreateNode(ZSKIPLIST_MAXLEVEL,0,NULL);
+    // 为头结点每层的属性进行初始化
     for (j = 0; j < ZSKIPLIST_MAXLEVEL; j++) {
         zsl->header->level[j].forward = NULL;
         zsl->header->level[j].span = 0;
@@ -129,24 +131,112 @@ int zslRandomLevel(void) {
 /* Insert a new node in the skiplist. Assumes the element does not already
  * exist (up to the caller to enforce that). The skiplist takes ownership
  * of the passed SDS string 'ele'. */
+// score: 分数
+// ele: 成员，是一个 sds 字符串类型
 zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
+    // update 用来保存每层的某个节点，该节点是待插入节点的前一个节点，例如：
+    //
+    // head
+    // level[2] ---- 1---------- 6 ----- 10
+    // level[1] ---- 1 ----- 4 - 6 ----- 10    插入一个 7
+    // level[0] ---- 1 - 2 - 4 - 6 - 8 - 10
+    //
+    // 这里先不说明插入的详细过程，只通过上面的跳表就可以知道，7 会被插入到 6 的后面，
+    // 并且假设 7 的高度为 3，此时的 update 数组内容如下所示：
+    //
+    // update[2] = 6，代表第三层的 6 是待插入节点 7 的前一个节点。
+    // update[1] = 6, update[0] = 6，同理。之后会遍历 update 数组，并将数组中每个元素
+    // 的 forward 指向新节点。
+    //
+    // 最终结果为：
+    // head
+    // level[2] ---- 1 --------- 6 - 7 ----- 10
+    // level[1] ---- 1 ----- 4 - 6 - 7 ----- 10    插入一个 7
+    // level[0] ---- 1 - 2 - 4 - 6 - 7 - 8 - 10
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
+    //
     unsigned int rank[ZSKIPLIST_MAXLEVEL];
     int i, level;
 
     serverAssert(!isnan(score));
     x = zsl->header;
+    // 从 zsl 的最高层开始查找，并不断下降，直到最后到达第 1 层
+    // Tips: 什么是最高层？
+    // 比如 zsl 当前有 3 个节点（不算头结点），每个节点的层数
+    // 分别为 4，2，5，那么 zsl->level 就是节点中层数最高的 5
     for (i = zsl->level-1; i >= 0; i--) {
         /* store rank that is crossed to reach the insert position */
         rank[i] = i == (zsl->level-1) ? 0 : rank[i+1];
-        while (x->level[i].forward &&
+
+        // 循环需要满足的条件如下：
+        // 1. level[i] 前进指针指向一个非 null 节点，且前进指针指向的节点的分值
+        // 小于当前插入值的分值，那么就可以向前移动，继续查找，例如有如下跳表：
+        //
+        // head
+        // level[2] ---- 1---------- 4 ----- 6
+        // level[1] ---- 1 ----- 3 - 4 ----- 6    插入一个 8
+        // level[0] ---- 1 - 2 - 3 - 4 - 5 - 6
+        //
+        // 此时跳表的 level 为 3（此时外层的 for 循环中的 i = 3-1 = 2），
+        // 从 head 的 level[3-1] 开始找起，level[2] 的前进指针指向了 1，不为空，
+        // 且要插入的节点分值为 8，大于 1，所以可以将 x 移动到当前节点的 forward 节点，
+        // 即移动到 4。
+        //
+        // 4 还是小于 8，继续向前移动，移动到 6，此时 6 的前进指针为 null，所以不会进入
+        // while 循环了，继续向下执行，update[2] = x = 当前节点 6。至此，此轮 for 循环
+        // 结束。
+        //
+        // 继续进行第二轮 for 循环，此时 i = 1，这代表着现在降到了跳表的第二层。第二层的
+        // 6 依然指向 null，所以不进入 while，update[1] = 当前节点 6。
+        //
+        // 第三轮 for 循环，此时 i = 0，这代表已经来到了跳表的第一层，此时的 6 依然指向
+        // null，update[0] = 6。
+        //
+        //
+        // 2. level[i] 前进指针指向一个非 null 节点，且前进指针指向的节点的分值
+        // 等于当前插入值的分值，也就是遇到了分值一样的情况了，此时会继续判断二者的
+        // 成员值，因为成员值是一个字符串，所以会根据字典顺序进行比较，如果 forward
+        // 的成员值小于要插入的成员值，则继续向前移动。
+        //
+        // 简单的说，如果分值相同，会继续根据成员值进行判断。
+        // 比如：
+        //
+        //   节点 1           节点 2     （省略头结点，头节点指向节点 1）
+        // +--------+       +--------+
+        // +   l3   + ----> +   l3   +
+        // +   l2   + ----> +   l2   +
+        // +   l1   + ----> +   l1   +      添加一个新节点，成员值为 bbbbb，
+        // +  30.0  + ----> +  50.0  +      分值为 30.0
+        // +  aaaaa + ----> + ccccc  +
+        // +--------+       +--------+
+        //
+        // 开始会从头结点开始查找，找到节点 1，发现节点 1 的 score 为 30.0，继续判断成员值，
+        // 因为 bbbbb > aaaaa，所以移动到节点 1，看后一个节点 节点 2 的 score 值，因为
+        // 50 > 30，所以停止移动，新节点将插入到节点 1 的后面
+        //
+        //   节点 1           新节点
+        // +--------+       +--------+
+        // +   l3   + ----> +   l3   +
+        // +   l2   + ----> +   l2   +
+        // +   l1   + ----> +   l1   +
+        // +  30.0  + ----> +  30.0  +
+        // +  aaaaa + ----> + bbbbb  +
+        // +--------+       +--------+
+        while (x->level[i].forward &&   // level[i] 的前进指针指向非 null 节点
+                // 如果插入节点的分值大于 level[i] 指向节点的分值
                 (x->level[i].forward->score < score ||
+                    // 插入节点分值等于 level[i] 指向节点的分值
                     (x->level[i].forward->score == score &&
+                    // level[i] 指向节点的 ele 小于插入节点的 ele
+                    // Tips: sdscmp(x, y), 当 x < y 时，返回一个负数
                     sdscmp(x->level[i].forward->ele,ele) < 0)))
         {
+            //
             rank[i] += x->level[i].span;
+            // 移动到下一个节点
             x = x->level[i].forward;
         }
+        // 记录当前层的待插入节点的前一个节点
         update[i] = x;
     }
     /* we assume the element is not already inside, since we allow duplicated
@@ -154,16 +244,61 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
      * caller of zslInsert() should test in the hash table if the element is
      * already inside or not. */
     level = zslRandomLevel();
+    // 如果随机生成的高度大于当前 zsl 的最大高度，那么会多出来独立的几层，需要连接起来，
+    // 例如下面这个例子，新插入一个 8，且 8 的随机层数为 5，那么就会多出来 2 层，这两
+    // 层是独立的，需要将其与 head 连接起来。
+    //
+    //  head                                   8 （独立）
+    //                                         8 （独立）
+    // level[2] ---- 1---------- 4 ----- 6 --- 8
+    // level[1] ---- 1 ----- 3 - 4 ----- 6 --- 8
+    // level[0] ---- 1 - 2 - 3 - 4 - 5 - 6 --- 8
+    //
+    // 连接后：
+    //
+    // head
+    // level[4] ------------------------------ 8
+    // level[3] ------------------------------ 8
+    // level[2] ---- 1---------- 4 ----- 6 --- 8
+    // level[1] ---- 1 ----- 3 - 4 ----- 6 --- 8
+    // level[0] ---- 1 - 2 - 3 - 4 - 5 - 6 --- 8
     if (level > zsl->level) {
+        // 为多出的这几层进行连接
         for (i = zsl->level; i < level; i++) {
             rank[i] = 0;
+            // 独立的节点，那么需要用头结点作为 update
             update[i] = zsl->header;
             update[i]->level[i].span = zsl->length;
         }
+        // 更新最大高度
         zsl->level = level;
     }
+    // 创建一个节点
     x = zslCreateNode(level,score,ele);
+    // 将新节点的每一层与跳表中对应的那一层关联起来
+    // 比如：update[0] 指向 x[0]，update[1] 指向 x[1]
+    // 文字不好理解，看下面的图示：
+    //
+    // head
+    // level[2] ---- 1---------- 4 ----- 8
+    // level[1] ---- 1 ----- 3 - 4 ----- 8    插入一个 7, 假设层数为 2
+    // level[0] ---- 1 - 2 - 3 - 4 - 5 - 8
+    //
+    // 因为层数为 2，所以 for 2 次，每次都会将 7 的层数关联起来
+    //
+    // head
+    // level[2] ---- 1---------- 4 --------- 8
+    // level[1] ---- 1 ----- 3 - 4 ----- 7 - 8  第二次：4 指向 7，7 指向 8
+    // level[0] ---- 1 - 2 - 3 - 4 - 5 - 7 - 8  第一次循环，将 7 的第一层关联起来
+    //                                          5 指向 7，7 指向 8
     for (i = 0; i < level; i++) {
+        // 就和链表的添加操作一样，要将 x 添加到 update 的后面，
+        // 需要先将 x 指向 update 的后一个节点，再将 update 指向 x
+        //
+        // update -> update.next, 要将 x 添加到 update 后面
+        // 1. x -> update.next
+        // 2. update -> x
+        // 结果：update -> x -> update.next
         x->level[i].forward = update[i]->level[i].forward;
         update[i]->level[i].forward = x;
 
@@ -177,12 +312,13 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
         update[i]->level[i].span++;
     }
 
+    // 更新新添加节点的回退指针
     x->backward = (update[0] == zsl->header) ? NULL : update[0];
     if (x->level[0].forward)
         x->level[0].forward->backward = x;
     else
         zsl->tail = x;
-    zsl->length++;
+    zsl->length++;  // 节点数量 + 1
     return x;
 }
 

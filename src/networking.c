@@ -35,6 +35,12 @@
 #include <math.h>
 #include <ctype.h>
 
+// 文件时间的处理器，包括：
+// 1. 连接应答处理器，负责对各个客户端应答
+// 2. 命令请求处理器，负责接收客户端传来的命令请求
+// 3. 命令回复处理器，负责向客户端返回命令的执行结果
+// 4. 复制处理器，当主服务器和从服务器进行复制操作时
+
 static void setProtocolError(const char *errstr, client *c);
 int postponeClientRead(client *c);
 int ProcessingEventsWhileBlocked = 0; /* See processEventsWhileBlocked(). */
@@ -2100,6 +2106,7 @@ void processInputBuffer(client *c) {
     }
 }
 
+// 命令请求处理器
 void readQueryFromClient(connection *conn) {
     client *c = connGetPrivateData(conn);
     int nread, readlen;

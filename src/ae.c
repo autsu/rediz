@@ -48,6 +48,7 @@
 
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
+// 自动选择系统中性能最高的多路复用
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
 #else
@@ -154,6 +155,7 @@ void aeStop(aeEventLoop *eventLoop) {
     eventLoop->stop = 1;
 }
 
+//
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
@@ -196,6 +198,10 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
     }
 }
 
+// 套接字没有事件被监听，返回 AE_NONE
+// 套接字读事件被监听，返回 AE_READABLE
+// 套接字写事件被监听，返回 AE_WRITABLE
+// 套接字写和读事件都被监听，返回 AE_READABLE | AE_WRITABLE
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
     if (fd >= eventLoop->setsize) return 0;
     aeFileEvent *fe = &eventLoop->events[fd];

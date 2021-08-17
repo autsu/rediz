@@ -52,7 +52,7 @@
  * The parameter 'now' is the current time in milliseconds as is passed
  * to the function to avoid too many gettimeofday() syscalls. */
 int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
-    long long t = dictGetSignedIntegerVal(de);
+    long long t = dictGetSignedIntegerVal(de);  // int64_t
     mstime_t expire_latency;
     if (now > t) {
         sds key = dictGetKey(de);
@@ -117,12 +117,14 @@ int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
  * order to do more work in both the fast and slow expire cycles.
  */
 
+//  默认每个数据块检查的键数量
 #define ACTIVE_EXPIRE_CYCLE_KEYS_PER_LOOP 20 /* Keys for each DB loop. */
 #define ACTIVE_EXPIRE_CYCLE_FAST_DURATION 1000 /* Microseconds. */
 #define ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC 25 /* Max % of CPU to use. */
+// 全局变量，记录检查进度
 #define ACTIVE_EXPIRE_CYCLE_ACCEPTABLE_STALE 10 /* % of stale keys after which
                                                    we do extra efforts. */
-
+// 定期删除策略实现
 void activeExpireCycle(int type) {
     /* Adjust the running parameters according to the configured expire
      * effort. The default effort is 1, and the maximum configurable effort

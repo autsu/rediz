@@ -1354,6 +1354,7 @@ werr: /* Write error. */
 }
 
 /* Save the DB on disk. Return C_ERR on error, C_OK on success. */
+// 创建 RDB 文件
 int rdbSave(char *filename, rdbSaveInfo *rsi) {
     char tmpfile[256];
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
@@ -1425,17 +1426,20 @@ werr:
 int rdbSaveBackground(char *filename, rdbSaveInfo *rsi) {
     pid_t childpid;
 
+    // 如果存在活动的子进程进行RDB保存，AOF重写或加载的模块产生的某些辅助进程，则返回 C_ERR
     if (hasActiveChildProcess()) return C_ERR;
-
+    // 备份当前数据库的脏键值
     server.dirty_before_bgsave = server.dirty;
+    // 最近一个执行BGSAVE的时间
     server.lastbgsave_try = time(NULL);
-
+    // 创建子进程
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         int retval;
 
         /* Child */
-        redisSetProcTitle("redis-rdb-bgsave");
+        redisSetProcTitle("redis-rdb-bgsave");  // 设置进程标题，方便识别
         redisSetCpuAffinity(server.bgsave_cpulist);
+        // 执行保存操作，将数据库的内容写到filename文件中
         retval = rdbSave(filename,rsi);
         if (retval == C_OK) {
             sendChildCOWInfo(CHILD_TYPE_RDB, 1, "RDB");

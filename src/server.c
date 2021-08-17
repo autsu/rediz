@@ -1613,6 +1613,7 @@ const char *strChildType(int type) {
 
 /* Return true if there are active children processes doing RDB saving,
  * AOF rewriting, or some side process spawned by a loaded module. */
+// 如果存在活动的子进程进行RDB保存，AOF重写或加载的模块产生的某些辅助进程，则返回true
 int hasActiveChildProcess() {
     return server.child_pid != -1;
 }
