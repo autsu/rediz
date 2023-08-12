@@ -312,11 +312,16 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
         update[i]->level[i].span++;
     }
 
-    // 更新新添加节点的回退指针
+    // 更新新添加节点的回退指针，如果 update[0] 是 header，那么就将回退指针设置为 null，
+    // 不是 header，则设置为 update[0]
+    // 这里为什么只有 update[0] 呢？因为每个节点只有一个后退指针，
+    // 所以这里只需为第 1 层设置后退节点
     x->backward = (update[0] == zsl->header) ? NULL : update[0];
+    // 将新节点的下一节点的 backward 指向新节点（如果有下一个节点的话）
+    // 就和双链表的添加操作一样
     if (x->level[0].forward)
         x->level[0].forward->backward = x;
-    else
+    else    // 否则说明新节点是最后一个节点，此时更新 tail 为新节点
         zsl->tail = x;
     zsl->length++;  // 节点数量 + 1
     return x;
@@ -326,21 +331,31 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
  * zslDeleteRangeByRank. */
 void zslDeleteNode(zskiplist *zsl, zskiplistNode *x, zskiplistNode **update) {
     int i;
+    // 删除每层中的 x
     for (i = 0; i < zsl->level; i++) {
+        // 如果 update 的下一个节点是 x 
         if (update[i]->level[i].forward == x) {
             update[i]->level[i].span += x->level[i].span - 1;
+            // 和链表的删除操作一样，将被删除的前一个节点指向要删除的后一个节点
             update[i]->level[i].forward = x->level[i].forward;
         } else {
             update[i]->level[i].span -= 1;
         }
     }
+    // 如果被删除节点有下一个节点，将下一个节点的后退指针指向被删除节点的前一个节点
     if (x->level[0].forward) {
         x->level[0].forward->backward = x->backward;
     } else {
+        // 否则说明被删除节点是跳表中的最后一个节点，更新 tail 为被删除
+        // 节点的前一个
         zsl->tail = x->backward;
     }
+    // 更新跳表的最大高度字段
+    // 从最高层开始，如果头结点在该层没有下一个节点，那么说明该层为空，level--，
+    // 循环删除所有空层
     while(zsl->level > 1 && zsl->header->level[zsl->level-1].forward == NULL)
         zsl->level--;
+    // 更新跳表的节点数量    
     zsl->length--;
 }
 
@@ -356,6 +371,30 @@ int zslDelete(zskiplist *zsl, double score, sds ele, zskiplistNode **node) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     int i;
 
+    // 整体流程：
+    //
+    // head
+    // level[4] ------------------------------ 8
+    // level[3] ------------------------------ 8
+    // level[2] ---- 1---------- 4 ----- 6 --- 8    删除 6
+    // level[1] ---- 1 ----- 3 - 4 ----- 6 --- 8
+    // level[0] ---- 1 - 2 - 3 - 4 - 5 - 6 --- 8
+    //
+    // 1. 先从最高处 level[4] 开始，下一个节点为 8，比 6 大，不满足 while 条件，
+    // x = head.level[4], update[4] = x，降到 level[3]
+    //
+    // 2. level[3] 和 [4] 情况一样，
+    // x = head.level[3], update[3] = x
+    //
+    // 3. level[2] 会从头结点前进到节点 4，
+    // x = 4, update[2] = x（其实当 score 相同时，还会继续比较 ele，这里省略）
+    //
+    // 4. level[1] => x = 4, update[1] = x
+    // 5. level[0] => x = 5, update[0] = x
+    // 至此，update 记录了被删除在每层的前一个节点，x 是第一层的被删除节点的前一个
+    // 节点
+
+    // 和插入操作一样，先查找跳表，找到被删除节点在每层的前一个节点
     x = zsl->header;
     for (i = zsl->level-1; i >= 0; i--) {
         while (x->level[i].forward &&
@@ -367,9 +406,12 @@ int zslDelete(zskiplist *zsl, double score, sds ele, zskiplistNode **node) {
         }
         update[i] = x;
     }
+
     /* We may have multiple elements with the same score, what we need
      * is to find the element with both the right score and object. */
+    // 此时的 x 是被删除节点在第一层的前一个节点，获取 x 的下一个节点
     x = x->level[0].forward;
+    // 如果 x 存在，且 score 和 ele 都相同，调用删除节点函数进行删除
     if (x && score == x->score && sdscmp(x->ele,ele) == 0) {
         zslDeleteNode(zsl, x, update);
         if (!node)
